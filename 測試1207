@@ -1,0 +1,121 @@
+import gurobipy as grb
+
+allmoney = {'0':0}
+for a in range(3,4):
+
+    # 設定模型
+    m = grb.Model("Equipment_Rental")
+
+    # 設定參數
+    equipment_levels = ['3-1', '3-2', '3-3', '3-4', '2-1', '2-2', '1-1', '1-2', '1-3', '1-4']
+    price_per_unit = {'3-1': 20, '3-2': 20, '3-3': 20, '3-4': 20, 
+                        '2-1': 15, '2-2': 15, 
+                        '1-1': 10, '1-2': 10, '1-3': 10, '1-4': 10}
+    vendors = ['A', 'B', 'C', 'D', 'E', 'F']
+    multiplier = {'A': 1.4, 'B': 1.5, 'C': 1.6, 'D': 1.65, 'E': 1.3, 'F': 2.0}
+    max_rental_time = 12 * 60  # 每天最多租借時間為12小時
+    segment_limit = 480  # 單次租借最多 480 分鐘
+    min_wait_time_F = 5  # 廠商 F 最小等待時間為 5 分鐘
+    min_wait_time_CDE = 3  # 廠商 D 最小等待時間為 3 分鐘
+    wait = {'F':5,'C':3,'D':3,'E':3}
+    
+    # 定義變數
+    Rent = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=segment_limit, vtype=grb.GRB.CONTINUOUS, name="Rent")
+    StartTime = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=max_rental_time, vtype=grb.GRB.CONTINUOUS, name="StartTime")
+    EndTime = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=max_rental_time, vtype=grb.GRB.CONTINUOUS, name="EndTime")
+    use = m.addVars(equipment_levels, vendors , range(a), vtype=grb.GRB.BINARY, name='use')
+
+    # 目標函數：最大化總收入
+    m.setObjective(grb.quicksum(Rent[i, j, k] * price_per_unit[i] * multiplier[j]  * use[i,j,k]
+                                for i in equipment_levels for j in vendors for k in range(a)), grb.GRB.MAXIMIZE)
+
+    # 每台設備的總租借時間不超過12小時
+    for i in equipment_levels:
+        m.addConstr(grb.quicksum(Rent[i, j, k] for j in vendors for k in range(a)) <= max_rental_time)
+
+    # 單次租借時間限制
+    for i in equipment_levels:
+        for j in vendors:
+            for k in range(a):
+                m.addConstr(Rent[i, j, k] >= 0)
+                m.addConstr(Rent[i, j, k] <= segment_limit)
+                m.addConstr(EndTime[i, j, k] == StartTime[i, j, k] + Rent[i, j, k])
+
+    # 等待時間限制
+    for s in range(a-1):
+        for k in range(s):
+            m.addConstr(grb.quicksum(StartTime[i,'F',s+1] for i in equipment_levels) >= grb.quicksum(EndTime[i, 'F', k] for i in equipment_levels) + min_wait_time_F)
+            m.addConstr(grb.quicksum(StartTime[i,'D',s+1] for i in equipment_levels) >= grb.quicksum(EndTime[i, 'D', k] for i in equipment_levels) + min_wait_time_CDE)
+            m.addConstr(grb.quicksum(StartTime[i,'E',s+1] for i in equipment_levels) >= grb.quicksum(EndTime[i, 'E', k] for i in equipment_levels) + min_wait_time_CDE)
+            m.addConstr(grb.quicksum(StartTime[i,'C',s+1] for i in equipment_levels) >= grb.quicksum(EndTime[i, 'C', k] for i in equipment_levels) + min_wait_time_CDE)
+    
+    
+    # 新增約束條件：每家廠商在同一時間段只能租借一台設備
+    for j in vendors:
+        for k in range(a):  # 針對每一段時間
+            m.addConstr(grb.quicksum(use[i, j, k] for i in equipment_levels) <= 1)  # 每個廠商每段時間最多只能租借一台設備
+        
+    
+            
+            
+    # 廠商一天最多的租借時間為720分鐘        
+    for j in vendors:
+        m.addConstr(grb.quicksum(Rent[i, j, k] for i in equipment_levels for k in range(a)) <= 720)
+        
+
+    for j in ['C','D','E','F']:
+        m.addConstr(grb.quicksum(Rent[i,j,k] for k in range(a) for i in equipment_levels) <= 720 - grb.quicksum((use[i,j,k])for k in range(a) for i in equipment_levels) * (wait[j]) )
+
+    for i in equipment_levels:
+        for j1 in vendors:
+            for j2 in vendors:
+                if j1 != j2:
+                    for k1 in range(a):
+                        for k2 in range(k1):
+                            m.addConstr(StartTime[i,j1,k1] >= EndTime[i,j2,k2])
+
+        
+        
+# 求解模型
+    m.optimize()
+    allmoney[str(a)] = m.objval
+print(allmoney)        
+# 輸出結果
+output = []
+
+
+
+
+if m.status == grb.GRB.OPTIMAL:
+    print('----------------------------設備租借-----------------------------')
+    for i in equipment_levels:
+        for k in range(a):
+            for j in vendors:
+                if Rent[i, j, k].X > 0:
+                    
+                    b = f"設備 {i} 由廠商 {j} 在第 {k+1} 段租借 "
+                    b = str(b)
+                    output.append(b)
+                    print(f"設備 {i} 由廠商 {j} 在第 {k+1} 段租借 ")
+                    print(f"租借時間: {round(Rent[i, j, k].x)} 分鐘")
+                    print(f"開始時間: {StartTime[i,j,k].x}")
+                    print(f"結束時間: {EndTime[i,j,k].x}")
+    print('----------------------------廠商類別-----------------------------')
+    for j in vendors:
+        for k in range(a):
+            for i in equipment_levels:
+                if Rent[i, j, k].X > 0:
+                    print(f"廠商 {j} 在第 {k+1} 段時間租借 {i} 號設備 ")
+                    print(f"租借時間: {Rent[i, j, k].x} 分鐘")
+    print('----------------------------其他數據-----------------------------')
+    print(f"最大利潤為: {m.objVal}")
+    total = 0
+    for j in vendors:
+        for k in range(a):
+            for i in equipment_levels:
+                if Rent[i, j, k].X > 0:
+                    total = total + Rent[i,j,k].X
+    print(f"設備利用率為：{round(total/(720*len(equipment_levels))*100,3)}%")
+else:
+    print("無解")
+    
