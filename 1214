@@ -96,13 +96,13 @@ def plot(equipment_levels,price_per_unit,vendors,multiplier,max_rental_time,segm
     # Define a list of instruments and vendors
     instruments = equipment_levels
     for i in instruments:
-        instrument_labels.append(f"{i}({price_per_unit} $/m)")
+        instrument_labels.append(f"{i}({price_per_unit[i]} $/m)")
     vendors_newname = []
     for i in vendors:
         if i in wait:
-            vendors_newname.append(f"{i} ({multiplier[i]}x 利潤), {wait[i]}分鐘等待限制)")
+            vendors_newname.append(f"{i} ({multiplier[i]}x 利潤), {wait[i]} wait time)")
         else:
-            vendors_newname.append(f"{i} ({multiplier[i]}x 利潤), 0分鐘等待限制)")
+            vendors_newname.append(f"{i} ({multiplier[i]}x profit), 0 wait time)")
     colors = ["blue", "green", "red", "cyan", "magenta", "yellow", "black", "white", "orange", "purple", "brown", "pink", "gray", "olive", "lime", "teal", "navy", "maroon", "aqua", "gold", "violet", "indigo", "coral", "salmon", "khaki", "turquoise"]
     vendor_colors = {}
     for i in range(len(vendors_newname)):
@@ -139,7 +139,7 @@ def plot(equipment_levels,price_per_unit,vendors,multiplier,max_rental_time,segm
 
     # Add a color legend for the vendors
     handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10) for color in vendor_colors.values()]
-    ax.legend(handles, vendors, title="Vendors", loc='upper right', fontsize=10, title_fontsize=12)  # Adjust legend font size
+    ax.legend(handles, vendors_newname, title="Vendors", loc='upper right', fontsize=10, title_fontsize=12)  # Adjust legend font size
 
     # Set the x-axis limits to 12 hours (720 minutes)
     ax.set_xlim(0, 720)
