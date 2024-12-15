@@ -79,13 +79,14 @@ def cal(equipment_levels,price_per_unit,vendors,multiplier,max_rental_time,segme
     m.optimize()
 
     output = []
-
+    total = 0
     # 輸出結果
     if m.status == grb.GRB.OPTIMAL:
         for i in equipment_levels:
             for k in range(a):
                 for j in vendors:
                     if Rent[i, j, k].X > 0:
+                        total = total + Rent[i,j,k].x
                         output.append([i,j,Rent[i, j, k].x,k+1])
         
     return(output,m.objVal,{round(total/(720*len(equipment_levels))*100,3)})
@@ -258,7 +259,7 @@ def confirm():  # 確認數據
         f"每天最長租借時間:{max_rental_time}分鐘\n"
     )
     messagebox.showinfo("輸入的資訊", result_message)
-    need = [equipment,price_per_unit,vendors,multipliers,segment_limit,max_rental_time,wait_times]
+    need = [equipment,price_per_unit,vendors,multipliers,max_rental_time,segment_limit,wait_times]
     
 
     
