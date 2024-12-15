@@ -1,0 +1,410 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[3]:
+
+
+import tkinter as tk
+from tkinter import messagebox
+import gurobipy as grb
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import subprocess
+import os
+quantity_scales = []  # 設備數量滑桿
+price_scales = []  # 設備價格滑桿
+multiplier_scales = []  # 廠商價格倍數滑桿
+wait_time_scales = []  # 廠商等待時間滑桿
+
+def cal(equipment_levels,price_per_unit,vendors,multiplier,max_rental_time,segment_limit,wait,special):
+    
+    # 設定模型
+    m = grb.Model("Equipment_Rental")
+
+    # 設定參數
+    a = 8
+    f = 1440
+    # 定義變數
+    Rent = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=segment_limit, vtype=grb.GRB.CONTINUOUS, name="Rent")
+    StartTime = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=max_rental_time, vtype=grb.GRB.CONTINUOUS, name="StartTime")
+    EndTime = m.addVars(equipment_levels, vendors, range(a), lb=0, ub=max_rental_time, vtype=grb.GRB.CONTINUOUS, name="EndTime")
+    use = m.addVars(equipment_levels, vendors , range(a), vtype=grb.GRB.BINARY, name='use')
+
+    # 目標函數：最大化總收入
+    m.setObjective(grb.quicksum(Rent[i, j, k] * price_per_unit[i] * multiplier[j]  * use[i,j,k]
+                                for i in equipment_levels for j in vendors for k in range(a)), grb.GRB.MAXIMIZE)
+
+    # 每台設備的總租借時間不超過12小時
+    for i in equipment_levels:
+        m.addConstr(grb.quicksum(Rent[i, j, k] for j in vendors for k in range(a)) <= max_rental_time)
+
+    # 單次租借時間限制
+    for i in equipment_levels:
+        for j in vendors:
+            for k in range(a):
+                m.addConstr(Rent[i, j, k] >= 0)
+                m.addConstr(Rent[i, j, k] <= segment_limit)
+                m.addConstr(EndTime[i, j, k] == StartTime[i, j, k] + Rent[i, j, k])
+
+
+
+    
+    # 等待時間限制
+        # 單次租借時間限制
+    for i in equipment_levels:
+        for j in vendors:
+            for k in range(a):
+                if j in special:
+                    m.addConstr(Rent[i, j, k] >= 0)
+                    m.addConstr(Rent[i, j, k] <= int(special[j]))
+                    m.addConstr(EndTime[i, j, k] == StartTime[i, j, k] + Rent[i, j, k])
+                else:
+                    m.addConstr(Rent[i, j, k] >= 0)
+                    m.addConstr(Rent[i, j, k] <= segment_limit)
+                    m.addConstr(EndTime[i, j, k] == StartTime[i, j, k] + Rent[i, j, k])
+
+        # 等待時間限制
+    for j in vendors:
+        if j in wait:
+            for s in range(a-1):
+                for k in range(s):
+                    m.addConstr(grb.quicksum(Rent[i,j,k] for k in range(a) for i in equipment_levels) <= f - (grb.quicksum((use[i,j,k])for k in range(a) for i in equipment_levels)-1) * (wait[j]) )            
+                    m.addConstr(grb.quicksum(StartTime[i,j,s+1] for i in equipment_levels) >= grb.quicksum(EndTime[i, j, k] for i in equipment_levels) + wait[j])
+        else:   
+            m.addConstr(grb.quicksum(Rent[i, j, k] for i in equipment_levels for k in range(a)) <= f)           
+
+     # 新增約束條件：每家廠商在同一時間段只能租借一台設備
+    for j in vendors:
+        for k in range(a):  # 針對每一段時間
+            m.addConstr(grb.quicksum(use[i, j, k] for i in equipment_levels) <= 1)  # 每個廠商每段時間最多只能租借一台設備
+
+    # 廠商一天最多的租借時間為720分鐘        
+    for j in vendors:
+        m.addConstr(grb.quicksum(Rent[i, j, k] for i in equipment_levels for k in range(a)) <= f)
+
+    # 求解模型
+    m.optimize()
+
+    output = []
+    total = 0
+    # 輸出結果
+    if m.status == grb.GRB.OPTIMAL:
+        for i in equipment_levels:
+            for k in range(a):
+                for j in vendors:
+                    if Rent[i, j, k].X > 0:
+                        total = total + Rent[i,j,k].x
+                        output.append([i,j,Rent[i, j, k].x,k+1])
+        
+    return(output,m.objVal,{round(total/(720*len(equipment_levels))*100,3)})
+
+def plot(equipment_levels,price_per_unit,vendors,multiplier,max_rental_time,segment_limit,wait,data):
+    # Data
+    instrument_labels = []
+    # Define a list of instruments and vendors
+    instruments = equipment_levels
+    for i in instruments:
+        instrument_labels.append(f"{i}({price_per_unit[i]} $/m)")
+    vendors_newname = []
+    for i in vendors:
+        if i in wait:
+            vendors_newname.append(f"{i} ({multiplier[i]}x profit), {wait[i]} wait time)")
+        else:
+            vendors_newname.append(f"{i} ({multiplier[i]}x profit), 0 wait time)")
+    colors = ["blue", "green", "red", "cyan", "magenta", "yellow", "black", "white", "orange", "purple", "brown", "pink", "gray", "olive", "lime", "teal", "navy", "maroon", "aqua", "gold", "violet", "indigo", "coral", "salmon", "khaki", "turquoise"]
+    vendor_colors = {}
+    for i in range(len(vendors_newname)):
+        vendor_colors[vendors_newname[i]] = colors[i] 
+
+    # Map vendor codes to descriptions
+    vendor_mapping = {}
+    for i in range(len(vendors)):
+        vendor_mapping[vendors[i]] = vendors_newname[i] 
+
+    # Create a Gantt plot with corrected start times based on sequence
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Dictionary to track the current time for each instrument
+    instrument_end_times = {instrument: 0 for instrument in instruments}
+
+    # Plot each task with the corrected start time
+    for entry in data:
+        instrument, vendor_code, length, seq = entry
+        vendor = vendor_mapping[vendor_code]  # Map vendor code to description
+        instrument_idx = instruments.index(instrument)
+        # Get the current end time for this instrument and calculate the new start time
+        start_time = instrument_end_times[instrument]
+        # Update the end time for this instrument
+        instrument_end_times[instrument] = start_time + length
+        # Plot the task
+        ax.barh(instrument_idx, length, left=start_time, color=vendor_colors[vendor], edgecolor='black', height=0.8)
+
+    # Set axis labels
+    ax.set_yticks(range(len(instruments)))
+    ax.set_yticklabels(instrument_labels, fontsize=10)  # Adjust y-axis label font size
+    ax.set_xlabel("Time (minutes)", fontsize=10)  # Adjust x-axis label font size
+    ax.set_title("Gantt Chart for Instrument Tasks", fontsize=10)  # Adjust title font size
+    #plt.figure(figsize=(8, 6))
+
+    # Add a color legend for the vendors
+    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10) for color in vendor_colors.values()]
+    ax.legend(handles, vendors_newname, title="Vendors", loc='upper right', fontsize=10, title_fontsize=12)  # Adjust legend font size
+
+    # Set the x-axis limits to 12 hours (720 minutes)
+    ax.set_xlim(0, 720)
+
+def generate_scales():  # 生成設備等級數量滑桿
+    global quantity_scales, price_scales
+
+    # 清空舊的滑桿
+    for scale in quantity_scales + price_scales:
+        scale.destroy()
+    quantity_scales.clear()
+    price_scales.clear()
+
+    # 獲取設備等級數量
+    try:
+        levels = int(level_entry.get())
+        if levels <= 0:
+            raise ValueError
+    except ValueError:
+        messagebox.showerror("錯誤", "請輸入正確的設備等級數量！")
+        return
+
+    # 動態生成滑桿
+    for i in range(levels):
+        # 設備數量滑桿
+        tk.Label(equipment_inner_frame, text=f"等級 {i + 1} 設備數量:").grid(row=i, column=0, sticky=tk.W)
+        quantity_scale = tk.Scale(equipment_inner_frame, from_=1, to=10, orient=tk.HORIZONTAL)
+        quantity_scale.grid(row=i, column=1)
+        quantity_scales.append(quantity_scale)
+        # 設備價格滑桿
+        tk.Label(equipment_inner_frame, text=f"等級 {i + 1} 設備價格:").grid(row=i, column=2, sticky=tk.W)
+        price_scale = tk.Scale(equipment_inner_frame, from_=5, to=50, orient=tk.HORIZONTAL)
+        price_scale.grid(row=i, column=3)
+        price_scales.append(price_scale)
+
+    # 更新設備框架的高度
+    equipment_canvas.update_idletasks()
+    equipment_canvas.config(scrollregion=equipment_canvas.bbox("all"))
+
+def generate_vendor_scales():  # 生成廠商滑桿
+    global multiplier_scales, wait_time_scales
+
+    # 清空舊的滑桿
+    for scale in multiplier_scales + wait_time_scales:
+        scale.destroy()
+    multiplier_scales.clear()
+    wait_time_scales.clear()
+
+    # 獲取廠商數量
+    try:
+        vendors_count = int(vendors_entry.get())
+        if vendors_count <= 0:
+            raise ValueError
+    except ValueError:
+        messagebox.showerror("錯誤", "請輸入正確的廠商數量！")
+        return
+
+    # 動態生成滑桿
+    for i in range(vendors_count):
+        vendor_name = chr(65 + i)  # 將廠商名稱設為 A, B, C...
+        # 廠商價格倍數滑桿
+        tk.Label(vendor_inner_frame, text=f"廠商 {vendor_name} 價格倍數:").grid(row=i, column=0, sticky=tk.W)
+        multiplier_scale = tk.Scale(vendor_inner_frame, from_=1.0, to=3.0, resolution=0.05, orient=tk.HORIZONTAL)
+        multiplier_scale.grid(row=i, column=1)
+        multiplier_scales.append(multiplier_scale)
+
+        # 廠商等待時間滑桿
+        tk.Label(vendor_inner_frame, text=f"廠商 {vendor_name} 等待時間:").grid(row=i, column=2, sticky=tk.W)
+        wait_time_scale = tk.Scale(vendor_inner_frame, from_=0, to=10, resolution=1, orient=tk.HORIZONTAL)
+        wait_time_scale.grid(row=i, column=3)
+        wait_time_scales.append(wait_time_scale)
+
+    # 更新廠商框架的高度
+    vendor_canvas.update_idletasks()
+    vendor_canvas.config(scrollregion=vendor_canvas.bbox("all"))
+
+def confirm():  # 確認數據
+    global need
+    levels = int(level_entry.get())
+    vendors_count = int(vendors_entry.get())
+
+    # 收集設備滑桿數據
+    quantities = [scale.get() for scale in quantity_scales]
+    prices = [scale.get() for scale in price_scales]
+
+    # 生成 equipment 和 price_per_unit
+    equipment = []
+    price_per_unit = {}
+    for level in range(levels, 0, -1):  # 從高等級到低等級
+        for i in range(quantities[levels - level]):
+            equipment_name = f"{level}-{i + 1}"
+            equipment.append(equipment_name)
+            price_per_unit[equipment_name] = prices[levels - level]
+
+    # 收集廠商滑桿數據，產生 multipliers、wait_times
+    vendors = [chr(65 + i) for i in range(vendors_count)]  # 廠商名稱 A, B, C...
+    multipliers = {vendors[i]: multiplier_scales[i].get() for i in range(vendors_count)}
+    wait_times = {vendors[i]: wait_time_scales[i].get() for i in range(vendors_count)}
+
+    # 產生 segment_limit、max_rental_time
+    max_rental_time = 60 * float(max_rental_time_entry.get())
+    segment_limit = 60 * float(segment_limit_entry.get())
+    tem = []
+    rental = {}
+    try:
+        tem.append(new_limit_entry.get())
+    except: 
+        tem = []
+    if tem:
+        for i in tem:
+            tem = i.split(',')
+        for i in tem:
+            newtem = i.split(':')
+            rental[newtem[0]] = newtem[1]
+    else:
+        rental = {}
+    print(rental)
+    # 測試顯示結果
+    result_message = (
+        f"設備: {equipment}\n"
+        f"設備價格: {price_per_unit}\n"
+        f"廠商: {vendors}\n"
+        f"廠商價格倍數: {multipliers}\n"
+        f"廠商等待時間: {wait_times}\n"
+        f"單次租借最長時間:{segment_limit}分鐘\n"
+        f"每天最長租借時間:{max_rental_time}分鐘\n"
+    )
+    messagebox.showinfo("輸入的資訊", result_message)
+    need = [equipment,price_per_unit,vendors,multipliers,max_rental_time,segment_limit,wait_times,rental]
+    
+
+    
+    
+def execute():  # 執行
+    win = tk.Tk()
+    win.title("第F組Python期末專題-執行結果")
+    win.geometry("1280x720")
+    #還沒放變數
+    output,profit,percent = cal(need[0],need[1],need[2],need[3],int(need[4]),int(need[5]),need[6],need[7])
+    plot(need[0],need[1],need[2],need[3],int(need[4]),int(need[5]),need[6],output)
+    #放演算法與視覺化界面
+    # Save the plot to a file
+    file_path = "ganttplot.png"
+    plt.savefig(file_path)
+    
+    # Close the current plot
+    plt.close()
+    
+    # Open the saved plot using the default image viewer
+    os.startfile(file_path)  # Works on Windows
+    list1=["廠商的時間(list)","設備的時間(list)","價錢(str or list)"]#放函數的地方
+    menu= output #廠商的時間，(向量list)
+    mon=("利潤為：%f"%(profit))#list1[2]#錢，(str or list)
+    
+    frame_1_win = tk.Frame(win,width=30, relief=tk.RIDGE, bd=5)        # 建立 Frame
+    frame_1_win.pack(fill='both', expand=True)
+    frame_2_win = tk.Frame(win,width=30, relief=tk.RIDGE, bd=5)        # 建立 Frame
+    frame_2_win.pack(anchor='sw',side='right',pady=10,padx=10, expand=True)
+
+    # Scrollbar 
+    scrollbar = tk.Scrollbar(frame_1_win,width=30)
+    scrollbar.pack(side='right', fill='y')  # 設定位置在右側，垂直填滿
+
+    # 建立 Listbox 並放入 Frame，設定 yscrollcommand=scrollbar.set
+    listbox = tk.Listbox(frame_1_win, width=100, height=30, yscrollcommand=scrollbar.set)
+    for i in menu:
+        listbox.insert(tk.END, i)  # 使用 for 迴圈添加選項
+    listbox.pack(side='left', fill='both', expand=True)
+
+    tk.Label(frame_2_win, text=mon).grid(row=0, column=0, sticky=tk.W)
+
+    # 設定 scrollbar 
+    scrollbar.config(command=listbox.yview)
+    win.mainloop()
+
+root = tk.Tk()
+root.title("第F組Python期末專題")
+root.geometry("1280x720")
+
+# Frame
+input_frame = tk.Frame(root, pady=10, relief=tk.RIDGE, bd=5)
+input_frame.pack(side=tk.TOP, fill=tk.X)
+
+button_frame = tk.Frame(root, pady=10)
+button_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+## 設備框架
+equipment_frame = tk.Frame(root, pady=10, relief=tk.RIDGE, bd=5)
+equipment_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+equipment_canvas = tk.Canvas(equipment_frame)
+equipment_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+equipment_scrollbar = tk.Scrollbar(equipment_frame, orient=tk.VERTICAL, command=equipment_canvas.yview)
+equipment_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+equipment_canvas.config(yscrollcommand=equipment_scrollbar.set)
+
+equipment_inner_frame = tk.Frame(equipment_canvas)
+equipment_canvas.create_window((0, 0), window=equipment_inner_frame, anchor="nw")
+
+## 廠商框架
+vendor_frame = tk.Frame(root, pady=10, relief=tk.RIDGE, bd=5)
+vendor_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+vendor_canvas = tk.Canvas(vendor_frame)
+vendor_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+vendor_scrollbar = tk.Scrollbar(vendor_frame, orient=tk.VERTICAL, command=vendor_canvas.yview)
+vendor_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+vendor_canvas.config(yscrollcommand=vendor_scrollbar.set)
+
+vendor_inner_frame = tk.Frame(vendor_canvas)
+vendor_canvas.create_window((0, 0), window=vendor_inner_frame, anchor="nw")
+
+# 輸入框部分
+tk.Label(input_frame, text="請輸入設備等級數量（例如：3）：").grid(row=0, column=0, sticky=tk.W)
+level_entry = tk.Entry(input_frame)
+level_entry.grid(row=0, column=1)
+
+tk.Label(input_frame, text="請輸入廠商數量，上限26家（例如：6）：").grid(row=1, column=0, sticky=tk.W)
+vendors_entry = tk.Entry(input_frame)
+vendors_entry.grid(row=1, column=1)
+
+tk.Label(input_frame, text="請輸入每天最長租借時間(單位：小時)（例如：12）：").grid(row=2, column=0, sticky=tk.W)
+max_rental_time_entry = tk.Entry(input_frame)
+max_rental_time_entry.grid(row=2, column=1)
+
+tk.Label(input_frame, text="請輸入單次租借最長時間(單位：小時)（例如：8）：").grid(row=3, column=0, sticky=tk.W)
+segment_limit_entry = tk.Entry(input_frame)
+segment_limit_entry.grid(row=3, column=1)
+
+tk.Label(input_frame, text="請輸入特定廠商單次租借最長時間(單位：小時)（例如：8）：F:4,E:6").grid(row=4, column=0, sticky=tk.W)
+new_limit_entry = tk.Entry(input_frame)
+new_limit_entry.grid(row=4, column=1)
+
+# 按鈕
+exit_button = tk.Button(button_frame, text="退出", command=root.quit)
+exit_button.pack(anchor='s', side='right', padx=10)
+
+execute_button = tk.Button(button_frame, text="執行", command=execute)
+execute_button.pack(anchor='s', side='right', padx=10)
+
+confirm_button = tk.Button(button_frame, text="確認數值", command=confirm)
+confirm_button.pack(anchor='s', side='right', padx=10)
+
+generate_vendor_button = tk.Button(button_frame, text="調整廠商數值", command=generate_vendor_scales)
+generate_vendor_button.pack(anchor='s', side='right', padx=10)
+
+generate_button = tk.Button(button_frame, text="調整設備數值", command=generate_scales)
+generate_button.pack(anchor='s', side='right', padx=10)
+
+root.mainloop()
+
+
+
+
+
