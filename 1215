@@ -255,16 +255,16 @@ def confirm():  # 確認數據
     rental = {}
     try:
         tem.append(new_limit_entry.get())
+        if tem:
+            for i in tem:
+                tem = i.split(',')
+            for i in tem:
+                newtem = i.split(':')
+                rental[newtem[0]] = newtem[1]
+        else:
+            rental = {}
     except: 
         tem = []
-    if tem:
-        for i in tem:
-            tem = i.split(',')
-        for i in tem:
-            newtem = i.split(':')
-            rental[newtem[0]] = newtem[1]
-    else:
-        rental = {}
     print(rental)
     # 測試顯示結果
     result_message = (
@@ -275,6 +275,7 @@ def confirm():  # 確認數據
         f"廠商等待時間: {wait_times}\n"
         f"單次租借最長時間:{segment_limit}分鐘\n"
         f"每天最長租借時間:{max_rental_time}分鐘\n"
+        f"特定廠商單次租借最長時間：{rental}"
     )
     messagebox.showinfo("輸入的資訊", result_message)
     need = [equipment,price_per_unit,vendors,multipliers,max_rental_time,segment_limit,wait_times,rental]
